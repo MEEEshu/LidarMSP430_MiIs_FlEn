@@ -53,16 +53,13 @@ volatile unsigned char express_scan_dens_resp[7]={0xA5,0x5A,0x54,0x00,0x00,0x40,
 
 volatile unsigned char express_scan_dens_data[1]={0xA5};
 volatile unsigned   int indexLocal = 0;
-typedef struct {
-    float angle;
-    float distance;
-    unsigned char Sneg;
-    unsigned char S;
-} MessageData;
+
+volatile unsigned int Angle;
+volatile float Distance;
+volatile unsigned char s;
+volatile unsigned char sNeg;
 
 typedef short int uint16_t;
-
-MessageData dataFromLidar;
 
 
 volatile unsigned char frame_count;
@@ -253,7 +250,7 @@ __interrupt void USCI_A1_ISR(void)
     case USCI_NONE: break;
     case USCI_UART_UCRXIFG:
       while(!(UCA1IFG&UCTXIFG));
-      //UCA1TXBUF = UCA1RXBUF;
+      UCA1TXBUF = UCA1RXBUF;
       __no_operation();
       break;
     case USCI_UART_UCTXIFG: break;
@@ -263,10 +260,8 @@ __interrupt void USCI_A1_ISR(void)
   }
 }
 
-MessageData processMessage(unsigned long long *result) {
+void processMessage(unsigned long long *result) {
     // Declare variables
-    unsigned char Sneg, S;
-    float Angle, distance;
 
     // Extract individual bytes from the 40-bit result
     unsigned long long buffer[5];
@@ -277,25 +272,17 @@ MessageData processMessage(unsigned long long *result) {
     buffer[4] = *result & 0xFF;         // Least significant byte
 
     // Extract bits 6 and 7 from the first byte
-    Sneg = (buffer[0] & 0x40) >> 6; // Bit 6
-    S = (buffer[0] & 0x80) >> 7;    // Bit 7
+    sNeg = (buffer[0] & 0x40) >> 6; // Bit 6
+    s = (buffer[0] & 0x80) >> 7;    // Bit 7
 
     // Calculate the value for Angle
     uint16_t rawAngle = ((buffer[0] & 0x3F) << 8) | buffer[1]; // Mask first 6 bits
-    Angle = (float)rawAngle / 64.0;
+    Angle = rawAngle / 64;
 
     // Calculate the value for distance
     uint16_t rawDistance = (buffer[2] << 8) | buffer[3];
-    distance = (float)rawDistance / 4.0;
+    Distance = (float)(unsigned int)rawDistance / 4000.0;
 
-    // Populate the result struct
-    MessageData data;
-    data.angle = Angle / 64;
-    data.distance = distance / 4;
-    data.Sneg = Sneg;
-    data.S = S;
-
-    return data;
 }
 
 void floatToCharArray(float value, char *buffer, unsigned int bufferSize) {
@@ -377,8 +364,8 @@ __interrupt void USCI_A0_ISR(void)
         result |= (unsigned long long)dataBuffer[2] << 16; // Byte 2
         result |= (unsigned long long)dataBuffer[3] << 8;  // Byte 1
         result |= (unsigned long long)dataBuffer[4];       // Byte 0
-        dataFromLidar = processMessage(&result);
-        floatToCharArray(dataFromLidar.angle, valoareChar, sizeof(valoareChar));
+        processMessage(&result);
+        floatToCharArray(Distance, valoareChar, sizeof(valoareChar));
         while(indexChar < 5){
             while(!(UCA1IFG&UCTXIFG));
             UCA1TXBUF = (unsigned char)valoareChar[indexChar];
