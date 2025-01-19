@@ -32,6 +32,11 @@ volatile unsigned char start_scan_resp[7]={0xA5,0x5A,0x05,0x00,0x00,0x40,0x81}; 
 volatile unsigned char force_scan[2]={0xA5,0x21}; // force scan request
 volatile unsigned char express_scan[2]={0xA5,0x82}; // express scan request
 
+volatile unsigned char dataBuffer[5] = {0x00};
+volatile unsigned int indexDataBuffer = 0;
+volatile unsigned int startScan = 0;
+volatile unsigned int comparatorIndexDataLocal = 6;
+
 volatile unsigned char get_info[2]={0xA5,0x50}; // get info request
 volatile unsigned char get_sample_rate[2]={0xA5,0x59}; // get sample rate request
 volatile unsigned char get_lidar_conf[2]={0xA5,0x84}; // get lidar conf request
@@ -47,7 +52,7 @@ volatile unsigned char express_scan_dens[9]={0xA5,0x82,0x05,0x00,0x00,0x00,0x00,
 volatile unsigned char express_scan_dens_resp[7]={0xA5,0x5A,0x54,0x00,0x00,0x40,0x85}; // express scan legacy response
 
 volatile unsigned char express_scan_dens_data[1]={0xA5};
-
+volatile unsigned   int indexLocal = 0;
 typedef struct {
     float angle;
     float distance;
@@ -65,6 +70,9 @@ volatile unsigned char cabin_count;
 volatile unsigned char rec_byte_count;
 
 volatile unsigned char oRotatie[360] = {0};
+
+volatile char valoareChar[6];
+volatile int indexChar = 0;
 
 volatile unsigned i;
 volatile unsigned rotationNumber = 0;
@@ -193,13 +201,15 @@ __interrupt void Port_2(void)
     for(i=0;i<2;i++)
      {
      while(!(UCA1IFG&UCTXIFG));// trimite catre PC
-     UCA1TXBUF = stop_scan[i];
+     //UCA1TXBUF = stop_scan[i];
      }
 
     for(i=0;i<2;i++)
      {
      while(!(UCA0IFG&UCTXIFG));// verifica daca nu se transmite ceva
      UCA0TXBUF = stop_scan[i];
+     startScan = 0;
+     indexLocal = 0;
      }
 }
 
@@ -216,17 +226,20 @@ __interrupt void Port_4(void)
      UCA1TXBUF = get_health_status[i];
      }
 */
-    for(i=0;i<2;i++)
-    {
-    while(!(UCA0IFG&UCTXIFG));// verifica daca nu se transmite ceva
-    UCA0TXBUF = get_health_status[i];
-    }
+    // for(i=0;i<2;i++)
+    // {
+    // while(!(UCA0IFG&UCTXIFG));// verifica daca nu se transmite ceva
+    // //UCA0TXBUF = get_health_status[i];
+    // }
 
    for(i=0;i<2;i++)
     {
     while(!(UCA0IFG&UCTXIFG));// verifica daca nu se transmite ceva
     UCA0TXBUF = start_scan[i];
     }
+
+    startScan = 0;
+    indexLocal = 0;
 
 }
 
@@ -240,7 +253,7 @@ __interrupt void USCI_A1_ISR(void)
     case USCI_NONE: break;
     case USCI_UART_UCRXIFG:
       while(!(UCA1IFG&UCTXIFG));
-      UCA1TXBUF = UCA1RXBUF;
+      //UCA1TXBUF = UCA1RXBUF;
       __no_operation();
       break;
     case USCI_UART_UCTXIFG: break;
@@ -250,36 +263,80 @@ __interrupt void USCI_A1_ISR(void)
   }
 }
 
-MessageData processMessage(const unsigned char *buffer) {
+MessageData processMessage(unsigned long long *result) {
     // Declare variables
     unsigned char Sneg, S;
     float Angle, distance;
 
-    // Create a result struct to hold the output
-    MessageData result;
+    // Extract individual bytes from the 40-bit result
+    unsigned long long buffer[5];
+    buffer[0] = (*result >> 32) & 0xFF; // Most significant byte
+    buffer[1] = (*result >> 24) & 0xFF;
+    buffer[2] = (*result >> 16) & 0xFF;
+    buffer[3] = (*result >> 8) & 0xFF;
+    buffer[4] = *result & 0xFF;         // Least significant byte
 
-    // 1. Ignore the first 2 bytes
-    buffer += 2;
-
-    // 2. Extract bits 6 and 7 from the next byte
+    // Extract bits 6 and 7 from the first byte
     Sneg = (buffer[0] & 0x40) >> 6; // Bit 6
     S = (buffer[0] & 0x80) >> 7;    // Bit 7
 
-    // 3. Calculate the value for Angle
+    // Calculate the value for Angle
     uint16_t rawAngle = ((buffer[0] & 0x3F) << 8) | buffer[1]; // Mask first 6 bits
-    Angle = (float)rawAngle/64.0;
+    Angle = (float)rawAngle / 64.0;
 
-    // 4. Calculate the value for distance
+    // Calculate the value for distance
     uint16_t rawDistance = (buffer[2] << 8) | buffer[3];
-    distance = (float)rawDistance/4000.0;
+    distance = (float)rawDistance / 4.0;
 
     // Populate the result struct
-    result.angle = Angle/64;
-    result.distance = distance/4;
-    result.Sneg = Sneg;
-    result.S = S;
+    MessageData data;
+    data.angle = Angle / 64;
+    data.distance = distance / 4;
+    data.Sneg = Sneg;
+    data.S = S;
 
-    return result;
+    return data;
+}
+
+void floatToCharArray(float value, char *buffer, unsigned int bufferSize) {
+    int i2 = 0;
+    if (bufferSize < 2) return; // Bufferul trebuie să aibă cel puțin 2 caractere (un număr și null-terminator)
+
+    int integerPart = (int)value; // Partea întreagă
+    float fractionalPart = value - integerPart; // Partea fracțională
+
+    // Convertim partea întreagă în șir
+    int index = 0;
+    if (integerPart == 0) {
+        buffer[index++] = '0';
+    } else {
+        char temp[20]; // Buffer temporar pentru partea întreagă
+        int tempIndex = 0;
+
+        while (integerPart > 0) {
+            temp[tempIndex++] = '0' + (integerPart % 10); // Extragem cifrele
+            integerPart /= 10;
+        }
+
+        // Inversăm cifrele pentru partea întreagă
+        while (tempIndex > 0 && index < bufferSize - 1) {
+            buffer[index++] = temp[--tempIndex];
+        }
+    }
+
+    if (index < bufferSize - 1) {
+        buffer[index++] = '.'; // Adăugăm punctul zecimal
+    }
+
+        // Convertim partea fracțională în șir
+    for (i2 = 0; ((i2 < 6) && (index < (bufferSize - 1))); i2++) {
+        fractionalPart *= 10;
+        int digit = (int)fractionalPart;   // Extract the next digit
+        buffer[index++] = '0' + digit;     // Convert to character
+        fractionalPart -= digit;           // Remove the digit from fractionalPart
+    }
+
+    buffer[index] = '\0'; // Adăugăm null-terminatorul
 }
 
 // Rutina de tratare a intreruperilor UART A0 LIDAR
@@ -292,8 +349,60 @@ __interrupt void USCI_A0_ISR(void)
     case USCI_NONE: break;
     case USCI_UART_UCRXIFG:
      while(!(UCA1IFG&UCTXIFG));// verifica daca poate transmite catre PC
-     dataFromLidar = processMessage(UCA0RXBUF);
-     UCA1TXBUF = (uint16_t)dataFromLidar.distance;// transmite catre PC pachetul receptionat de la LIDAR
+
+
+    dataBuffer[0] = dataBuffer[1];
+    dataBuffer[1] = dataBuffer[2];
+    dataBuffer[2] = dataBuffer[3];
+    dataBuffer[3] = dataBuffer[4];
+    dataBuffer[4] = UCA0RXBUF;
+
+    if(dataBuffer[0] == 0x05 && dataBuffer[1] == 0x00 && dataBuffer[2] == 0x00 && dataBuffer[3] == 0x40 && dataBuffer[4] == 0x81){
+        startScan  = 1;
+    }
+
+    if(startScan){
+        indexLocal++;
+    }
+
+    if(indexLocal == comparatorIndexDataLocal){
+        indexLocal = 0;
+        //comparatorIndexDataLocal = 4;
+            // Create an unsigned long long to hold the result
+        unsigned long long result = 0;
+
+        // Construct the 40-bit result from dataBuffer
+        result |= (unsigned long long)dataBuffer[0] << 32; // Byte 4 (most significant 8 bits)
+        result |= (unsigned long long)dataBuffer[1] << 24; // Byte 3
+        result |= (unsigned long long)dataBuffer[2] << 16; // Byte 2
+        result |= (unsigned long long)dataBuffer[3] << 8;  // Byte 1
+        result |= (unsigned long long)dataBuffer[4];       // Byte 0
+        dataFromLidar = processMessage(&result);
+        floatToCharArray(dataFromLidar.angle, valoareChar, sizeof(valoareChar));
+        while(indexChar < 5){
+            while(!(UCA1IFG&UCTXIFG));
+            UCA1TXBUF = (unsigned char)valoareChar[indexChar];
+            //UCA1TXBUF = '1';
+            indexChar++;
+        }
+        // while(indexChar < 5){
+        //     while(!(UCA1IFG&UCTXIFG));
+        //     UCA1TXBUF = dataBuffer[indexChar];
+        //     indexChar++;
+        // }
+        while(!(UCA1IFG&UCTXIFG));
+        UCA1TXBUF = 10;
+        while(!(UCA1IFG&UCTXIFG));
+        UCA1TXBUF = 13;
+
+
+    }
+
+
+
+    //UCA1TXBUF = UCA0RXBUF;
+
+     indexChar = 0;
       __no_operation();
       break;
     case USCI_UART_UCTXIFG: break;
