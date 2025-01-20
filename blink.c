@@ -54,7 +54,7 @@ volatile unsigned char express_scan_dens_resp[7]={0xA5,0x5A,0x54,0x00,0x00,0x40,
 volatile unsigned char express_scan_dens_data[1]={0xA5};
 volatile unsigned   int indexLocal = 0;
 
-volatile unsigned int Angle;
+volatile unsigned int Angle = 0;
 volatile float Distance;
 volatile unsigned char s;
 volatile unsigned char sNeg;
@@ -71,6 +71,9 @@ volatile unsigned char oRotatie[360] = {0};
 volatile char valoareChar[6];
 volatile int indexChar = 0;
 
+volatile unsigned char inputAngle[3] = {0};
+volatile unsigned char inputAngleIndex = 0;
+
 volatile unsigned i;
 volatile unsigned rotationNumber = 0;
 void Init_GPIO();
@@ -82,8 +85,6 @@ int main(void)
   // Variabile
   i=0;  frame_count=0;  cabin_count=0;  rec_byte_count=0;
 
-  // Configure GPIO
-  //Init_GPIO();
 
   // Configurare CS SMCLK=1MHz CS_09.c
   FRCTL0 = FRCTLPW | NWAITS_2;
@@ -109,9 +110,7 @@ int main(void)
   P3SEL0 |= BIT0 | BIT4; // selectam primary function (P3.0 ca MCLK si P3.4 ca SMCLK)
 
   // Configure UART pins
- // P1SEL0 |= BIT6 | BIT7;                    // set 2-UART pin as second function
- // P4.3 -> TxD
-  //P4.2 ->  RxD
+
   P4SEL0 |= BIT2 | BIT3; // selectam functiile UCA1  TxD si RxD
   P1SEL0 |= BIT6 | BIT7; // selectam functiile UCA0  TxD si RxD
 
@@ -139,33 +138,7 @@ int main(void)
   // (1) N=32768/4800=6.827
   // (2) OS16=0, UCBRx=INT(N)=6
   // (4) Fractional portion = 0.827. Refered to UG Table 17-4, UCBRSx=0xEE.
- // 16 biti UCA1BRW = 8 biti UCA1BR1  8 biti UCA1BR0
-/*
- // 4800bps @ ACLK = 32768 Hz
-  UCA1BR0 = 0x06;                              // INT(32768/4800)
-  UCA1BR1 = 0x00;
-  UCA1MCTLW = 0xEE00;
-*/
-/*
-  // 9600bps @ 1MHz
-  UCA1BR0 = 0x06;                              // INT(32768/4800)
-  UCA1BR1 = 0x00;
-  UCA1MCTLW = 0x1181; // din calcule 0x1181 -> real 0x2081
-*/
 
-  // Baud Rate 115200bps
-  /*
-   * UCOS16 -> 1
-UCBRx -> 10
-UCBRFx -> 13
-UCBRSx ->0xAD
-
-UCAxMCTLW = UCBRSx + UCBFRx + UCOS16
-UCAxMCTLW = 0xADD1
-
-UCAxBRW = UCBRx
-UCAxBRW = 0x000A
-   */
   // Baud Rate A1 PC @ 115200bps
   UCA1BR0 = 0x0A;// @115200bps
   UCA1BR1 = 0x00;// @115200bps
@@ -216,18 +189,6 @@ __interrupt void Port_2(void)
 __interrupt void Port_4(void)
 {
     P4IFG &= ~BIT1;                         // Clear P4.1 IFG
-/*
-    for(i=0;i<2;i++)
-     {
-     while(!(UCA1IFG&UCTXIFG));// trimite catre PC
-     UCA1TXBUF = get_health_status[i];
-     }
-*/
-    // for(i=0;i<2;i++)
-    // {
-    // while(!(UCA0IFG&UCTXIFG));// verifica daca nu se transmite ceva
-    // //UCA0TXBUF = get_health_status[i];
-    // }
 
    for(i=0;i<2;i++)
     {
@@ -240,6 +201,8 @@ __interrupt void Port_4(void)
 
 }
 
+unsigned char valoareLocala;
+
 // Rutina de tratare a intreruperilor UART A1 PC
 #pragma vector=USCI_A1_VECTOR
 __interrupt void USCI_A1_ISR(void)
@@ -250,7 +213,32 @@ __interrupt void USCI_A1_ISR(void)
     case USCI_NONE: break;
     case USCI_UART_UCRXIFG:
       while(!(UCA1IFG&UCTXIFG));
-      UCA1TXBUF = UCA1RXBUF;
+      valoareLocala = UCA1RXBUF;
+      //UCA1TXBUF = valoareLocala;
+      int result = 0;
+      for (i = 0; i < 3; i++) {
+         result = result * 10 + inputAngle[i];
+      }
+      if(valoareLocala == 13 && (result <360 && result > 0)){
+             for(i=0;i<2;i++)
+              {
+              while(!(UCA0IFG&UCTXIFG));
+              UCA0TXBUF = start_scan[i];
+              }
+      }
+      else{
+        if(valoareLocala > 47 && valoareLocala < 58){
+                    inputAngle[inputAngleIndex] = valoareLocala - '0';
+        inputAngleIndex++;
+
+        if(inputAngleIndex == 3){
+          inputAngleIndex = 0;
+        }
+        }
+
+      }
+
+
       __no_operation();
       break;
     case USCI_UART_UCTXIFG: break;
@@ -272,16 +260,17 @@ void processMessage(unsigned long long *result) {
     buffer[4] = *result & 0xFF;         // Least significant byte
 
     // Extract bits 6 and 7 from the first byte
-    sNeg = (buffer[0] & 0x40) >> 6; // Bit 6
-    s = (buffer[0] & 0x80) >> 7;    // Bit 7
+    sNeg = (buffer[4] & 0x40) >> 6; // Bit 6
+    s = (buffer[4] & 0x80) >> 7;    // Bit 7
 
     // Calculate the value for Angle
-    uint16_t rawAngle = ((buffer[0] & 0x3F) << 8) | buffer[1]; // Mask first 6 bits
-    Angle = rawAngle / 64;
+    uint16_t rawAngle = ((buffer[3] & 0xFE) << 8) | buffer[2]; // extragem informatia de la bitul 7 la bitul 1 din primul byte
+                                                               // facem append la sirul de informatie pentru unghi
+    Angle = rawAngle / 64;              //calculam valoarea fizica a unghiului
 
     // Calculate the value for distance
-    uint16_t rawDistance = (buffer[2] << 8) | buffer[3];
-    Distance = (float)(unsigned int)rawDistance / 4000.0;
+    uint16_t rawDistance = (buffer[1] << 8) | buffer[0]; // facem append la sirul de informatie pentru distanta
+    Distance = (float)(unsigned int)rawDistance / 4000.0;// calculam distanta fizica
 
 }
 
@@ -355,32 +344,50 @@ __interrupt void USCI_A0_ISR(void)
     if(indexLocal == comparatorIndexDataLocal){
         indexLocal = 0;
         //comparatorIndexDataLocal = 4;
-            // Create an unsigned long long to hold the result
+            // Am creat un unsigned long long pentru a pastra datele din mesaj
         unsigned long long result = 0;
+        unsigned int resultInput = 0;
 
-        // Construct the 40-bit result from dataBuffer
+        // formam rezultatul din dataBuffer-ul de 40 biti
         result |= (unsigned long long)dataBuffer[0] << 32; // Byte 4 (most significant 8 bits)
         result |= (unsigned long long)dataBuffer[1] << 24; // Byte 3
         result |= (unsigned long long)dataBuffer[2] << 16; // Byte 2
         result |= (unsigned long long)dataBuffer[3] << 8;  // Byte 1
         result |= (unsigned long long)dataBuffer[4];       // Byte 0
-        processMessage(&result);
-        floatToCharArray(Distance, valoareChar, sizeof(valoareChar));
-        while(indexChar < 5){
-            while(!(UCA1IFG&UCTXIFG));
-            UCA1TXBUF = (unsigned char)valoareChar[indexChar];
-            //UCA1TXBUF = '1';
-            indexChar++;
+
+        processMessage(&result);// extragem valorile reale
+
+        for (i = 0; i < 3; i++) {
+         resultInput = resultInput * 10 + inputAngle[i];
+      }
+        if(Angle == resultInput){
+                    if(Distance != 0){
+                        floatToCharArray(Distance, valoareChar, sizeof(valoareChar));
+                        while(indexChar < 5){
+                            while(!(UCA1IFG&UCTXIFG));
+                            UCA1TXBUF = (unsigned char)valoareChar[indexChar];
+                            //UCA1TXBUF = '1';
+                            indexChar++;
+                        }
+
+
+                        for(i=0;i<2;i++)
+                        {
+
+
+                        while(!(UCA0IFG&UCTXIFG));// verifica daca nu se transmite ceva
+                        UCA0TXBUF = stop_scan[i];
+
+                        }
+
+                        for(i= 0; i<3; i++){
+                          inputAngle[i] = 0;
+                        }
+                        startScan = 0;
+                    }
+
         }
-        // while(indexChar < 5){
-        //     while(!(UCA1IFG&UCTXIFG));
-        //     UCA1TXBUF = dataBuffer[indexChar];
-        //     indexChar++;
-        // }
-        while(!(UCA1IFG&UCTXIFG));
-        UCA1TXBUF = 10;
-        while(!(UCA1IFG&UCTXIFG));
-        UCA1TXBUF = 13;
+
 
 
     }
